@@ -110,4 +110,115 @@ class GANimation(BaseModel):
         self._D.train()
         self._is_train = True
 
+    def set_eval(self):
+        self._G.eval()
+        self._is_train = False
+
+    # get image paths
+    def get_image_paths(self):
+        return OrderedDict(['read_img', self._input_real_img_path])
+
+    def forward(self, keep_data_for_visuals=False, return_estimates=False):
+        if not self._is_train:
+            # convert tensor to variables
+            real_img = Variable(self._input_real_img, volatile=True)
+            real_cond = Variable(self._input_real_cond, volatile=True)
+            desired_cond = Variable(self._input_desired_cond, volatile=True)
+
+            # generate fake images
+            fake_imgs, fake_img_mask = self._G.forward(real_img, desired_cond)
+            fake_img_mask = self.do_if_necessary_saturate_mask(rec_real_img_mask, saturate=self._opt.do_saturate_mask)
+            fake_imgs_masked = fake_img_mask * real_img + (1 - fake_img_mask) * fake_imgs
+
+            rec_real_img_rgb, rec_real_img_mask = self._G.forward(fake_imgs_masked, real_cond)
+            rec_real_img_mask = self._do_if_necessary_saturate_mask(rec_real_img_mask, saturate=self._opt.do_saturate_mask)
+            rec_real_imgs = rec_real_img_mask * fake_imgs_masked + (1 - rec_real_img_mask) * rec_real_img_rgb
+
+            imgs = None
+            data = None
+            if return_estimates:
+                # normalize mask for better visualization
+                fake_img_mask_max = fake_imgs_masked.view(fake_img_mask.size(0), -1).max(-1)[0]
+                fake_img_mask_max = torch.unsqueeze(torch.unsqueeze(torch.unsqueeze(fake_img_mask_max, -1), -1), -1)
+                # fake_img_mask_norm = fake_img_mask / fake_img_mask_max
+                fake_img_mask_norm = fake_img_mask
+
+                # generate images
+                im_real_img = util.tensor2im(real_img.data)
+                im_fake_imgs = util.tensor2im(fake_imgs.data)
+                im_fake_img_mask_norm = util.tensor2maskim(fake_img_mask_norm.data)
+                im_fake_imgs_masked = util.tensor2im(fake_imgs_masked.data)
+                im_rec_imgs = util.tensor2im(rec_real_img_rgb.data)
+                im_rec_img_mask_norm = util.tensor2maskim(rec_real_img_mask.data)
+                im_rec_imgs_masked = util.tensor2im(rec_real_imgs.data)
+                im_concat_img = np.concatenate([im_real_img, im_fake_imgs_masked, im_fake_img_mask_norm, im_fake_imgs,
+                                                im_rec_imgs, im_rec_img_mask_norm, im_rec_imgs_masked],
+                                               1)
+
+                im_real_img_batch = util.tensor2im(real_img.data, idx=-1, nrows=1)
+                im_fake_imgs_batch = util.tensor2im(fake_imgs.data, idx=-1, nrows=1)
+                im_fake_img_mask_norm_batch = util.tensor2maskim(fake_img_mask_norm.data, idx=-1, nrows=1)
+                im_fake_imgs_masked_batch = util.tensor2im(fake_imgs_masked.data, idx=-1, nrows=1)
+                im_concat_img_batch = np.concatenate([im_real_img_batch, im_fake_imgs_masked_batch,
+                                                      im_fake_img_mask_norm_batch, im_fake_imgs_batch],
+                                                     1)
+
+                imgs = OrderedDict([('real_img', im_real_img),
+                                    ('fake_imgs', im_fake_imgs),
+                                    ('fake_img_mask', im_fake_img_mask_norm),
+                                    ('fake_imgs_masked', im_fake_imgs_masked),
+                                    ('concat', im_concat_img),
+                                    ('real_img_batch', im_real_img_batch),
+                                    ('fake_imgs_batch', im_fake_imgs_batch),
+                                    ('fake_img_mask_batch', im_fake_img_mask_norm_batch),
+                                    ('fake_imgs_masked_batch', im_fake_imgs_masked_batch),
+                                    ('concat_batch', im_concat_img_batch),
+                                    ])
+
+                data = OrderedDict([('real_path', self._input_real_img_path),
+                                    ('desired_cond', desired_cond.data[0, ...].cpu().numpy().astype('str'))
+                                    ])
+
+            # keep data for visualization
+            if keep_data_for_visuals:
+                self._vis_real_img = util.tensor2im(self._input_real_img)
+                self._vis_fake_img_unmasked = util.tensor2im(fake_imgs.data)
+                self._vis_fake_img = util.tensor2im(fake_imgs_masked.data)
+                self._vis_fake_img_mask = util.tensor2maskim(fake_img_mask.data)
+                self._vis_real_cond = self._input_real_cond.cpu()[0, ...].numpy()
+                self._vis_desired_cond = self._input_desired_cond.cpu()[0, ...].numpy()
+                self._vis_batch_real_img = util.tensor2im(self._input_real_img, idx=-1)
+                self._vis_batch_fake_img_mask = util.tensor2maskim(fake_img_mask.data, idx=-1)
+                self._vis_batch_fake_img = util.tensor2im(fake_imgs_masked.data, idx=-1)
+
+            return imgs, data
+
+    def optimize_parameters(self, train_generator-True, keep_data_for_visuals=False):
+        if self._is_train:
+            # convert tensor to variables
+            self._B = self._input_real_img.size(0)
+            self._real_img = Variable(self._input_real_img)
+            self._real_cond = Variable(self._input_real_cond)
+            self._desired_cond = Variable(self._input_desired_cond)
+
+            # train D
+            loss_D, fake_imgs_masked = self._forward_D()
+            self._optimizer_D.zero_grad()
+            loss_D.backward()
+            self._optimizer_D.step()
+
+            loss_D_gp = self._gradient_penalty_D(fake_imgs_masked)
+            self._optimizer_D.zero_grad()
+            loss_D_gp.backward()
+            self._optimizer_D.step()
+
+            # train G
+            if train_generator:
+                loss_G = self._forward_G(keep_data_for_visuals)
+                self._optimizer_G.zero_grad()
+                loss_G.backward()
+                self._optimizer_G.step()
+
+    
+
     
