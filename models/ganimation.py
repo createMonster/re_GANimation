@@ -219,6 +219,71 @@ class GANimation(BaseModel):
                 loss_G.backward()
                 self._optimizer_G.step()
 
-    
+    def _forward_G(self, keep_data_for_visuals):
+        # geenrate fake images
+        fake_imgs, fake_img_mask = self._G.forward(self._real_img, self._desired_cond) 
+        fake_img_mask = self._do_if_necessary_saturate_mask(fake_img_mask, saturate=self._opt.do_saturate_mask)
+        fake_imgs_masked = fake_img_mask * self._real_img + (1 - fake_img_mask) * fake_imgs
+
+        # D(G(Ic1, c2)*M) masked
+        d_fake_desired_img_masked_prob, d_fake_desired_img_masked_cond = self._D.foroward(fake_imgs_masked)
+        self._loss_g_masked_fake = self._compute_loss_D(d_fake_desired_img_masked_prob, True) * self._opt.lambda_D_prob
+        self._loss_g_masked_cond = self._criterion_D_cond(d_fake_desired_img_masked_cond, self._desired_cond) / self._B * self._opt.lambda_D_cond
+
+        # G(G(Ic1, c2), c1)
+        rec_real_img_rgb, rec_real_img_mask = self._G.forward(fake_imgs_masked, self._real_cond)
+        rec_real_img_mask = self._do_if_necessary_saturate_mask(rec_real_img_mask, saturate=self._opt.do_saturate_mask)
+        rec_real_imgs = rec_real_img_mask * fake_imgs_masked * (1 - rec_real_img_mask) * rec_real_img_rgb
+
+        # l_cyc(G(G(Ic1, c2), c1)*M)
+        self._loss_g_cyc = self._cirterion_cycle(rec_real_imgs, self._real_img) * self._opt.lambda_cyc
+        
+        # loss mask
+        self._loss_g_mask_1 = torch.mean(fake_img_mask) * self._opt.lambda_mask
+        self._loss_g_mask_2 = torch.mean(rec_real_img_mask) * self._opt.lambda_mask
+        self._loss_g_mask_1_smooth = self._compute_loss_smooth(fake_img_mask) * self._opt.lambda_mask_smooth
+        self._loss_g_mask_2_smooth = self._compute_loss_smooth(rec_real_img_mask) * self._opt.lambda_mask_smooth
+
+        # keep data for visualization
+        if keep_data_for_visuals:
+            self._vis_real_img = util.tensor2im(self._input_real_img)
+            self._vis_fake_img_unmasked = util.tensor2im(fake_imgs.data)
+            self._vis_fake_img = util.tensor2im(fake_imgs_masked.data)
+            self._vis_fake_img_mask = util.tensor2maskim(fake_img_mask.data)
+            self._vis_real_cond = self._input_real_cond.cpu()[0, ...].numpy()
+            self._vis_desired_cond = self._input_desired_cond.cpu()[0, ...].numpy()
+            self._vis_batch_real_img = util.tensor2im(self._input_real_img, idx=-1)
+            self._vis_batch_fake_img_mask = util.tensor2maskim(fake_img_mask.data, idx=-1)
+            self._vis_batch_fake_img = util.tensor2im(fake_imgs_masked.data, idx=-1)
+            self._vis_rec_img_unmasked = util.tensor2im(rec_real_img_rgb.data)
+            self._vis_rec_real_img = util.tensor2im(rec_real_imgs.data)
+            self._vis_rec_real_img_mask = util.tensor2maskim(rec_real_img_mask.data)
+            self._vis_batch_rec_real_img = util.tensor2im(rec_real_imgs.data, idx=-1)
+
+        # combine losses
+        return self._loss_g_masked_fake + self._loss_g_masked_cond + \
+               self._loss_g_cyc + \
+               self._loss_g_mask_1 + self._loss_g_mask_2 + \
+               self._loss_g_mask_1_smooth + self._loss_g_mask_2_smooth
+
+    def _forward_D(self):
+        # generate fake images
+        fake_imgs, fake_img_mask = self._G.forward(self._real_img, self._desired_cond)
+        fake_img_mask = self._do_if_necessary_saturate_mask(fake_img_mask, saturate=self._opt.do_saturate_mask)
+        fake_imgs_masked = fake_img_mask * self._real_img + (1 - fake_img_mask) * fake_imgs
+
+        # D(real_I)
+        d_real_img_prob, d_real_img_cond = self._D.forward(self._real_img)
+        self._loss_d_real = self._compute_loss_D(d_real_img_prob, True) * self._opt.lambda_D_prob
+        self._loss_d_cond = self._criterion_D_cond(d_real_img_cond, self._real_cond) / self._B * self._opt.lambda_D_cond
+
+        # D(fake_I)
+        d_fake_desired_img_prob, _ = self._D.forward(fake_imgs_masked.detach())
+        self._loss_d_fake = self._compute_loss_D(d_fake_desired_img_prob, False) * self._opt.lambda_D_prob
+
+        # combine losses
+        return self._loss_d_real + self._loss_d_cond + self.loss_d_fake, fake_imgs_masked
+
+
 
     
